@@ -1,109 +1,34 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { useChat } from "@ai-sdk/react";
+import { useCallback, useState } from "react";
 import { Mic, MicOff, PhoneOff, Loader2, Bot, User } from "lucide-react";
-import { useVAD } from "../hooks/useVAD";
-import { encodeWAV } from "../lib/audio";
-import { transcribe, speak } from "../lib/openai";
-
-function getMessageText(message: {
-  parts: Array<{ type: string; text?: string }>;
-}): string {
-  return message.parts
-    .filter(
-      (part): part is { type: "text"; text: string } => part.type === "text"
-    )
-    .map((part) => part.text)
-    .join("");
-}
-
-const OPENAI_API_KEY = process.env.NEXT_PUBLIC_OPENAI_API_KEY || "";
+import { useVoiceChat } from "../hooks/useVoiceChat";
 
 export function VoiceChat() {
-  const [userText, setUserText] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
 
-  const log = useCallback((msg: string) => {
+  const handleLog = useCallback((msg: string) => {
     setLogs((prev) => [msg, ...prev].slice(0, 50));
   }, []);
 
-  const { messages, sendMessage } = useChat({
-    onFinish: async ({ message }) => {
-      log("🤖 GPT ready. Speaking...");
-      setIsAiSpeaking(true);
-      try {
-        const text = getMessageText(message);
-        const audioBlob = await speak(text, OPENAI_API_KEY);
-        if (audioRef.current) {
-          audioRef.current.src = URL.createObjectURL(audioBlob);
-          audioRef.current.onended = () => setIsAiSpeaking(false);
-          audioRef.current.play();
-        }
-      } catch (err) {
-        log(`❌ TTS Error: ${err instanceof Error ? err.message : err}`);
-        setIsAiSpeaking(false);
-      } finally {
-        setIsSpeaking(false);
-      }
-    },
-    onError: (err) => {
-      log(`❌ Chat Error: ${err.message}`);
-      setIsSpeaking(false);
-      setIsAiSpeaking(false);
-    }
-  });
-
-  const handleSpeechEnd = useCallback(
-    async (audio: Float32Array) => {
-      if (!OPENAI_API_KEY || isSpeaking) return;
-
-      setIsSpeaking(true);
-      try {
-        const wav = encodeWAV(audio);
-        const text = await transcribe(wav, OPENAI_API_KEY);
-
-        setUserText(text);
-        log(`✅ STT: ${text}`);
-
-        sendMessage({
-          role: "user",
-          parts: [{ type: "text", text }]
-        });
-      } catch (err) {
-        log(`❌ Error: ${err instanceof Error ? err.message : err}`);
-        setIsSpeaking(false);
-      }
-    },
-    [isSpeaking, log, sendMessage]
-  );
-
-  const { isListening, isLoading, start, stop } = useVAD({
-    onSpeechStart: () => log("🟡 Speaking..."),
-    onSpeechEnd: handleSpeechEnd
-  });
+  const {
+    userText,
+    assistantText,
+    isListening,
+    isVADLoading,
+    isProcessing,
+    isAiSpeaking,
+    start,
+    stop
+  } = useVoiceChat({ onLog: handleLog });
 
   const handleToggle = async () => {
     if (isListening) {
       stop();
     } else {
-      if (!OPENAI_API_KEY) {
-        alert("Set NEXT_PUBLIC_OPENAI_API_KEY in .env.local");
-        return;
-      }
-      log("🎤 Starting mic + VAD...");
       await start();
-      log("✅ Listening...");
     }
   };
-
-  const assistantMessage = messages.filter((m) => m.role === "assistant").pop();
-  const assistantText = assistantMessage
-    ? getMessageText(assistantMessage)
-    : "";
 
   return (
     <div className="flex flex-col h-screen w-full bg-[#202124]">
@@ -144,18 +69,18 @@ export function VoiceChat() {
         <div className="relative flex-1 max-w-xl aspect-video bg-[#3c4043] rounded-xl overflow-hidden flex items-center justify-center">
           <div
             className={`flex flex-col items-center justify-center transition-all duration-300 ${
-              isSpeaking ? "scale-105" : ""
+              isProcessing ? "scale-105" : ""
             }`}
           >
             <div
               className={`w-24 h-24 rounded-full bg-linear-to-br from-green-500 to-teal-600 flex items-center justify-center mb-4 ${
-                isListening && !isSpeaking ? "ring-2 ring-green-400" : ""
-              } ${isSpeaking ? "ring-4 ring-green-400 animate-pulse" : ""}`}
+                isListening && !isProcessing ? "ring-2 ring-green-400" : ""
+              } ${isProcessing ? "ring-4 ring-green-400 animate-pulse" : ""}`}
             >
               <User className="w-12 h-12 text-white" />
             </div>
             <span className="text-white text-lg font-medium">You</span>
-            {isSpeaking && (
+            {isProcessing && (
               <span className="text-green-400 text-sm mt-1">Speaking...</span>
             )}
           </div>
@@ -180,14 +105,14 @@ export function VoiceChat() {
       <div className="flex items-center justify-center gap-4 p-6 bg-[#202124]">
         <button
           onClick={handleToggle}
-          disabled={isLoading}
+          disabled={isVADLoading}
           className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 ${
             isListening
               ? "bg-red-500 hover:bg-red-600"
               : "bg-[#3c4043] hover:bg-[#4a4f54]"
           } disabled:opacity-50 disabled:cursor-not-allowed`}
         >
-          {isLoading ? (
+          {isVADLoading ? (
             <Loader2 className="w-6 h-6 text-white animate-spin" />
           ) : isListening ? (
             <Mic className="w-6 h-6 text-white" />
@@ -216,8 +141,6 @@ export function VoiceChat() {
         </div>
         <div className="max-w-md truncate">{logs[0] || "Ready"}</div>
       </div>
-
-      <audio ref={audioRef} />
     </div>
   );
 }
